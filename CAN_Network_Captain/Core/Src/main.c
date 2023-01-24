@@ -86,12 +86,16 @@ void myprintf(const char *fmt, ...);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+// FATFS save to sd card variables
+FATFS 		FatFs;
+FIL 		rwfile;
+FRESULT 	fres;                 //Result after operations
 // flag variables for CAN data received, these can be made into signals using osSignalSet()
 uint8_t data1collected = 0;
 
 int16_t failsafe = 3000;
 int16_t DefaultTask_delay = 3000;
-int16_t	SDCardSave_delay = 6000;
+int16_t	SDCardSave_delay = 3000;
 int16_t	read_delay = 500;
 int16_t retransmit_delay = 1000;
 
@@ -168,9 +172,16 @@ int main(void)
   }
 
 
-  HAL_Delay(100);
-
-  saveData();
+  myprintf("SD Card Connecting\r\n");
+  fres = f_mount(&FatFs, "0", 1);    //1=mount now
+  if (fres != FR_OK)
+  {
+  myprintf("No SD Card found : (%i)\r\n", fres);
+  }
+  else {
+  myprintf("SD Card Mounted Successfully!!!\r\n");
+  }
+  f_mount(NULL, "0", 0);
 
   /* USER CODE END 2 */
 
@@ -261,7 +272,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL6;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
   RCC_OscInitStruct.PLL.PREDIV = RCC_PREDIV_DIV1;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -277,7 +288,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -287,6 +298,10 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+
+  /** Enables the Clock Security System
+  */
+  HAL_RCC_EnableCSS();
 }
 
 /**
@@ -344,7 +359,7 @@ static void MX_SPI1_Init(void)
   hspi1.Instance = SPI1;
   hspi1.Init.Mode = SPI_MODE_MASTER;
   hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
@@ -415,14 +430,14 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(SP1_CS_GPIO_Port, SP1_CS_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : LED_Pin */
-  GPIO_InitStruct.Pin = LED_Pin;
+  /*Configure GPIO pin : SP1_CS_Pin */
+  GPIO_InitStruct.Pin = SP1_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(SP1_CS_GPIO_Port, &GPIO_InitStruct);
 
 }
 
@@ -432,15 +447,25 @@ int dataShift = 10;
 int dataPacket = 1;
 
 void myprintf(const char *fmt, ...) {
-  va_list args;
-  va_start(args, fmt);
-  vsnprintf(buffer, sizeof(buffer), fmt, args);
-  va_end(args);
 
-  int len = strlen(buffer);
-  HAL_UART_Transmit(&huart2, (uint8_t*)buffer, len, 1000);
+	char *buffer = malloc(100);
+
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(buffer, 100, fmt, args);
+	va_end(args);
+
+	int len = strlen(buffer);
+	HAL_UART_Transmit(&huart2, (uint8_t*)buffer, len, 1000);
+	free(buffer);
 }
 
+char* int_to_string(int num) {
+    int len = snprintf(NULL, 0, "%.10d", num);
+    char* str = malloc(len + 1);
+    snprintf(str, len + 1, "%.10d", num);
+    return str;
+}
 
 void printCANMessage(CAN_RxHeaderTypeDef Header, uint8_t data[]){
 	char dataStr[20];
@@ -451,57 +476,16 @@ void printCANMessage(CAN_RxHeaderTypeDef Header, uint8_t data[]){
 	myprintf("\r\n");
 }
 
-void saveData(void){
-	//Fatfs object
-	FATFS FatFs;
-	//File object
-	FIL file;
-
-	FRESULT fres;
-	const TCHAR *file_path = "0:/csv/test.csv";
-	const char *new_header = "Test";
-
-	// Mount drive
-	myprintf("Mounting SD card\r\n");
-	fres = f_mount(&FatFs, "", 1);
-	if (fres != FR_OK){
-		myprintf("f_mount pb: %d\r\n", fres);
-		return;
-	}
-
-	fres = f_open(&file, file_path, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
-	if (fres != FR_OK){
-		myprintf("f_open pb: %d\r\n", fres);
-	}
-	myprintf("Creating buffer\r\n");
-	CSV_BUFFER *buffer = csv_create_buffer();
-
-	myprintf("Loading csv\r\n");
-	csv_load(buffer, &file);
-
-	// Print buffer
-	uint32_t i, j;
-	for (i = 0; i < buffer->rows; i++){
-		for (j = 0; j < buffer->width[i]; j++){
-			//myprintf("%-10s\t", buffer->field[i][j]->text);
-			myprintf("buff[%d][%d] = %s\t\t", i, j, buffer->field[i][j]->text);
-			}
-	myprintf("\r\n");
-	}
-
-	// Let try overwriting one of the header fields
-	myprintf("Saving csv\r\n");
-	csv_set_field(buffer, 0, 1, (char *) new_header);
-	csv_save(&file, buffer);
-
-	myprintf("Destroying buffer\r\n");
-	csv_destroy_buffer(buffer);
-
-	// Close file
-	fres = f_close(&file);
-	if (fres != FR_OK){
-		myprintf("f_close pb: %d\r\n", fres);
+void print_buffer(CSV_BUFFER *buffer){
+	int i, j;
+	myprintf("\n");
+	for (i = 0; i < buffer->rows; i++) {
+		for (j = 0; j < buffer->width[i]; j++) {
+			myprintf("%c%s%c%c", buffer->text_delim, buffer->field[i][j]->text, buffer->text_delim, buffer->field_delim);
 		}
+		myprintf("\r\n");
+	}
+	myprintf("\n\n");
 }
 
 /* USER CODE END 4 */
@@ -559,12 +543,57 @@ void StartDefaultTask(void const * argument)
 void StartSDCardSaveTask(void const * argument)
 {
   /* USER CODE BEGIN StartSDCardSaveTask */
-
-
+  uint8_t sens_reading = 23;
+  uint8_t current_row = 0;
+  const TCHAR *file_path = "0:/csv/test.csv";
   /* Infinite loop */
   for(;;)
   {
 	myprintf(" -- STARTING thread SDCardSave -- \r\n");
+
+	myprintf("Mounting SD card\r\n");
+		fres = f_mount(&FatFs, "0", 1);
+		if (fres != FR_OK && current_row < 5){
+			myprintf("f_mount pb: %d\r\n", fres);
+		}
+		else{
+			myprintf("SD Card Mounted!\r\n");
+			fres = f_open(&rwfile, file_path, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
+			if (fres != FR_OK)
+			{
+				myprintf("f_open pb: %d\r\n", fres);
+			}
+			else{
+				myprintf("Creating buffer\r\n");
+				CSV_BUFFER *buffer = csv_create_buffer();
+
+				myprintf("Loading csv\r\n");
+				csv_load(buffer, &rwfile);
+
+				print_buffer(buffer);
+
+				// add a row and input values
+
+				myprintf("editing csv\r\n");
+				char *string_value = malloc(11);
+				for (int i = 0; i < 3; i++){
+					snprintf(string_value, 11, "%.10i", sens_reading);
+					csv_set_field(buffer, current_row, i, string_value);
+					sens_reading++;
+				}
+				free(string_value);
+				string_value = NULL;
+				current_row++;
+
+				csv_save(&rwfile, buffer);
+
+				f_mount(NULL, "0", 0);
+
+				f_close(&rwfile);
+				csv_destroy_buffer(buffer);
+			}
+		}
+
 	// restart CAN telemetry threads
 	myprintf(" -- RESUMING thread GetData1 -- \r\n");
 	osThreadResume(GetData1Handle);
@@ -672,7 +701,7 @@ void StartReadCAN(void const * argument)
 		//myprintf(" -- STARTING thread ReadCAN -- \r\n");
 		if(HAL_CAN_GetRxFifoFillLevel(&hcan, CAN_RX_FIFO0)){
 			HAL_CAN_GetRxMessage(&hcan, CAN_RX_FIFO0, &RxHeader, RxData);
-			HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);	//LED shows a CAN message read
+			//HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);	//LED shows a CAN message read
 			printCANMessage(RxHeader, RxData);
 
 //			if (RxHeader.StdId == 0x206){
@@ -688,7 +717,7 @@ void StartReadCAN(void const * argument)
 
 /**
   * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM1 interrupt took place, inside
+  * @note   This function is called  when TIM6 interrupt took place, inside
   * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
   * a global variable "uwTick" used as application time base.
   * @param  htim : TIM handle
@@ -699,7 +728,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 0 */
 
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM1) {
+  if (htim->Instance == TIM6) {
     HAL_IncTick();
   }
   /* USER CODE BEGIN Callback 1 */
