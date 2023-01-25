@@ -77,6 +77,7 @@ static uint8_t SD_ReadyWait(void)
   /* if SD goes ready, receives 0xFF */
   do {
     res = SPI_RxByte();
+    Timer2 = Timer2 - 1;
   } while ((res != 0xFF) && Timer2);
 
   return res;
@@ -143,6 +144,7 @@ static bool SD_RxDataBlock(BYTE *buff, UINT len)
   /* loop until receive a response or timeout */
   do {
     token = SPI_RxByte();
+    Timer1 = Timer1 - 1;
   } while((token == 0xFF) && Timer1);
 
   /* invalid response */
@@ -282,7 +284,8 @@ DSTATUS SD_disk_initialize(BYTE drv)
       {
         /* ACMD41 with HCS bit */
         do {
-          if (SD_SendCmd(CMD55, 0) <= 1 && SD_SendCmd(CMD41, 1UL << 30) == 0) break;
+        	Timer1 = Timer1 - 1;
+        	if (SD_SendCmd(CMD55, 0) <= 1 && SD_SendCmd(CMD41, 1UL << 30) == 0) break;
         } while (Timer1);
 
         /* READ_OCR */
@@ -314,7 +317,7 @@ DSTATUS SD_disk_initialize(BYTE drv)
         {
           if (SD_SendCmd(CMD1, 0) == 0) break; /* CMD1 */
         }
-
+        Timer1 = Timer1 - 1;
       } while (Timer1);
 
       /* SET_BLOCKLEN */

@@ -500,18 +500,18 @@ void print_buffer(CSV_BUFFER *buffer){
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-	CAN_TxHeaderTypeDef   TxHeader;
-
-	// CAN default data
-	TxHeader.StdId = 0x222;
-	TxHeader.ExtId = 0x00;
-	TxHeader.RTR = CAN_RTR_DATA;
-	TxHeader.IDE = CAN_ID_STD;
-	TxHeader.DLC = 4;
-	TxHeader.TransmitGlobalTime = DISABLE;
-
-	uint8_t freeMailboxs;
-	uint8_t data[10] = "bcad";
+//	CAN_TxHeaderTypeDef   TxHeader;
+//
+//	// CAN default data
+//	TxHeader.StdId = 0x222;
+//	TxHeader.ExtId = 0x00;
+//	TxHeader.RTR = CAN_RTR_DATA;
+//	TxHeader.IDE = CAN_ID_STD;
+//	TxHeader.DLC = 4;
+//	TxHeader.TransmitGlobalTime = DISABLE;
+//
+//	uint8_t freeMailboxs;
+//	uint8_t data[10] = "bcad";
 
 	/* Infinite loop */
 	for(;;)
@@ -553,10 +553,10 @@ void StartSDCardSaveTask(void const * argument)
 
 	myprintf("Mounting SD card\r\n");
 		fres = f_mount(&FatFs, "0", 1);
-		if (fres != FR_OK && current_row < 5){
+		if (fres != FR_OK){
 			myprintf("f_mount pb: %d\r\n", fres);
 		}
-		else{
+		else if (current_row < 10){
 			myprintf("SD Card Mounted!\r\n");
 			fres = f_open(&rwfile, file_path, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
 			if (fres != FR_OK)
@@ -592,6 +592,9 @@ void StartSDCardSaveTask(void const * argument)
 				f_close(&rwfile);
 				csv_destroy_buffer(buffer);
 			}
+		}
+		else{
+			myprintf("rows completed\r\n");
 		}
 
 	// restart CAN telemetry threads
