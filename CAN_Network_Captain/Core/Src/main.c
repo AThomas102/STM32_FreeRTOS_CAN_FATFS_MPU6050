@@ -89,7 +89,9 @@ void myprintf(const char *fmt, ...);
 // FATFS save to sd card variables
 FATFS 		FatFs;
 FIL 		rwfile;
+FILINFO*	filInfo;
 FRESULT 	fres;                 //Result after operations
+uint8_t		OVERWRITE = 0;		  // Overwrite files in the directory
 // flag variables for CAN data received, these can be made into signals using osSignalSet()
 uint8_t data1collected = 0;
 
@@ -123,7 +125,7 @@ int main(void)
 
   /* USER CODE END 1 */
 
-  /* MCU Configuration--------------------------------------------------------*/
+  /* MCU Configurationte--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
@@ -488,6 +490,16 @@ void print_buffer(CSV_BUFFER *buffer){
 	myprintf("\n\n");
 }
 
+// float to string
+void ftstr(char* str, uint8_t lstr, float num) {
+	memset(str, 0, lstr);
+	int whole = (int)num;
+	int dec = (int)((num - whole) * 1000 + 0.5);
+	if (whole < 99999){
+		sprintf(str, "%d.%d", whole, dec);
+	}
+}
+
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -516,7 +528,7 @@ void StartDefaultTask(void const * argument)
 	/* Infinite loop */
 	for(;;)
 	{
-		myprintf(" -- STARTING thread DefaultTask -- \r\n");
+		//myprintf(" -- STARTING thread DefaultTask -- \r\n");
 		DefaultProfiler++;
 
 //		if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, data, &TxMailbox) != HAL_OK){
@@ -527,7 +539,7 @@ void StartDefaultTask(void const * argument)
 //		myprintf("num free mailboxs: %i\r\n", freeMailboxs);
 //		myprintf("text mailbox used: %ld\r\n", TxMailbox);
 
-		myprintf(" -- ENDING thread DefaultTask -- \r\n");
+		//myprintf(" -- ENDING thread DefaultTask -- \r\n");
 		osDelay(DefaultTask_delay);	// Task is put to sleep for 500ms
 	}
   /* USER CODE END 5 */
@@ -543,9 +555,13 @@ void StartDefaultTask(void const * argument)
 void StartSDCardSaveTask(void const * argument)
 {
   /* USER CODE BEGIN StartSDCardSaveTask */
-  uint8_t sens_reading = 23;
+  uint8_t sens_reading = 2;
   uint8_t current_row = 0;
-  const TCHAR *file_path = "0:/csv/test.csv";
+  uint8_t file_number = 1;
+  TCHAR file_path[30];
+  char string_value[20] = {0};
+
+  sprintf(file_path, "0:/csv/test%hu.csv", file_number);
   /* Infinite loop */
   for(;;)
   {
@@ -554,14 +570,29 @@ void StartSDCardSaveTask(void const * argument)
 	myprintf("Mounting SD card\r\n");
 		fres = f_mount(&FatFs, "0", 1);
 		if (fres != FR_OK){
-			myprintf("f_mount pb: %d\r\n", fres);
+			myprintf("f_mount problem: %d\r\n", fres);
 		}
-		else if (current_row < 10){
+		else if (current_row < 10 || file_number < 10){
 			myprintf("SD Card Mounted!\r\n");
-			fres = f_open(&rwfile, file_path, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
+
+			if (current_row == 5 || file_number == 1){
+				current_row = 0;
+				do {
+					sprintf(file_path, "0:/csv/test%hu.csv", file_number);
+					fres = f_stat(file_path, filInfo);
+					file_number++;
+					if (fres != FR_OK) break;
+					myprintf("filepath exists (not overwriting): %s\r\n",file_path);
+				} while(fres != FR_NO_FILE && !OVERWRITE);
+			}
+
+			myprintf("using filepath: %s\r\n",file_path);
+
+			// read file, else if doesnt exist create new file
+			fres = f_open(&rwfile, file_path, FA_OPEN_ALWAYS | FA_READ | FA_WRITE);
 			if (fres != FR_OK)
 			{
-				myprintf("f_open pb: %d\r\n", fres);
+				myprintf("f_open problem: %d\r\n", fres);
 			}
 			else{
 				myprintf("Creating buffer\r\n");
@@ -575,14 +606,14 @@ void StartSDCardSaveTask(void const * argument)
 				// add a row and input values
 
 				myprintf("editing csv\r\n");
-				char *string_value = malloc(11);
-				for (int i = 0; i < 3; i++){
-					snprintf(string_value, 11, "%.10i", sens_reading);
+
+				for (int i = 0; i < 5; i++){
+					// the \r is needed for csv_set_field
+					sprintf(string_value, "%i\r", sens_reading);
 					csv_set_field(buffer, current_row, i, string_value);
+					memset(string_value, 0, sizeof(string_value));
 					sens_reading++;
 				}
-				free(string_value);
-				string_value = NULL;
 				current_row++;
 
 				csv_save(&rwfile, buffer);
@@ -598,9 +629,9 @@ void StartSDCardSaveTask(void const * argument)
 		}
 
 	// restart CAN telemetry threads
-	myprintf(" -- RESUMING thread GetData1 -- \r\n");
+	//myprintf(" -- RESUMING thread GetData1 -- \r\n");
 	osThreadResume(GetData1Handle);
-	myprintf(" -- RESUMING thread GetData2 -- \r\n");
+	//myprintf(" -- RESUMING thread GetData2 -- \r\n");
 	osThreadResume(GetData2Handle);
 
 	myprintf(" -- ENDING thread SDCardSave -- \r\n");
