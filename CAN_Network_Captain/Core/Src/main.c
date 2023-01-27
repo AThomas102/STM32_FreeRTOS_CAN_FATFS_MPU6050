@@ -24,10 +24,12 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "mpu6050.h"
 #include "csv.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h> //for va_list var arg functions
+#include <stdlib.h>
 #include <time.h>
 
 /* USER CODE END Includes */
@@ -49,6 +51,8 @@
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan;
 
+I2C_HandleTypeDef hi2c3;
+
 SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart2;
@@ -58,10 +62,12 @@ osThreadId SDCardSaveTaskHandle;
 osThreadId GetData1Handle;
 osThreadId GetData2Handle;
 osThreadId ReadCANHandle;
-osMessageQId TelemetryQueueHandle;
+osThreadId GetAccelTaskHandle;
 osMutexId canTelemetryMutexHandle;
 /* USER CODE BEGIN PV */
-char buffer[100];
+MPU6050_t MPU6050;
+
+
 
 /* USER CODE END PV */
 
@@ -71,14 +77,15 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_CAN_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_I2C3_Init(void);
 void StartDefaultTask(void const * argument);
 void StartSDCardSaveTask(void const * argument);
 void StartGetData1(void const * argument);
 void StartGetData2(void const * argument);
 void StartReadCAN(void const * argument);
+void StartGetAccelTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
-void saveData(void);
 void myprintf(const char *fmt, ...);
 
 /* USER CODE END PFP */
@@ -86,32 +93,41 @@ void myprintf(const char *fmt, ...);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-// FATFS save to sd card variables
+// FATFS variables
 FATFS 		FatFs;
 FIL 		rwfile;
 FILINFO*	filInfo;
 FRESULT 	fres;                 //Result after operations
-uint8_t		OVERWRITE = 0;		  // Overwrite files in the directory
-// flag variables for CAN data received, these can be made into signals using osSignalSet()
-uint8_t data1collected = 0;
+uint8_t		OVERWRITE = 1;		  // Overwrite files in the directory
 
+
+// RTOS task variables
 int16_t failsafe = 3000;
 int16_t DefaultTask_delay = 3000;
 int16_t	SDCardSave_delay = 3000;
 int16_t	read_delay = 500;
+int16_t	accel_read_delay = 200;
 int16_t retransmit_delay = 1000;
 
+typedef uint32_t TaskProfiler;
+TaskProfiler DefaultProfiler;
+uint32_t current_time;				// HAL get tick time since restart
+uint32_t accel_data_time;			// change to a single value taskQueue?
+
+// CAN variables
 CAN_HandleTypeDef     	CanHandle;
 CAN_RxHeaderTypeDef		RxHeader;
-
 uint8_t               	RxData[4];	// global CAN received data
 uint32_t              	TxMailbox;	// global CAN transmission mailbox
 CAN_FilterTypeDef 		canfil; //CAN Bus Filter
+// flag variables for CAN data received, these can be made into signals using osSignalSet()
+uint8_t data1collected = 0;
+uint8_t accel_data_collected = 0;
+// Accelerometer measurement variables, can this be done in DMA?
+float Ax, Ay, Az, Gx, Gy, Gz = 0;
 
-
-typedef uint32_t TaskProfiler;
-
-TaskProfiler DefaultProfiler;
+//m
+//char buffer[100];
 
 /* USER CODE END 0 */
 
@@ -125,7 +141,7 @@ int main(void)
 
   /* USER CODE END 1 */
 
-  /* MCU Configurationte--------------------------------------------------------*/
+  /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
@@ -147,6 +163,7 @@ int main(void)
   MX_CAN_Init();
   MX_FATFS_Init();
   MX_SPI1_Init();
+  MX_I2C3_Init();
   /* USER CODE BEGIN 2 */
 
   myprintf("------- CAN Captain Controller ----------\r\n");
@@ -204,11 +221,6 @@ int main(void)
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
-  /* Create the queue(s) */
-  /* definition and creation of TelemetryQueue */
-  osMessageQDef(TelemetryQueue, 16, uint16_t);
-  TelemetryQueueHandle = osMessageCreate(osMessageQ(TelemetryQueue), NULL);
-
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -219,11 +231,11 @@ int main(void)
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* definition and creation of SDCardSaveTask */
-  osThreadDef(SDCardSaveTask, StartSDCardSaveTask, osPriorityHigh, 0, 128);
+  osThreadDef(SDCardSaveTask, StartSDCardSaveTask, osPriorityHigh, 0, 256);
   SDCardSaveTaskHandle = osThreadCreate(osThread(SDCardSaveTask), NULL);
 
   /* definition and creation of GetData1 */
-  osThreadDef(GetData1, StartGetData1, osPriorityBelowNormal, 0, 128);
+  osThreadDef(GetData1, StartGetData1, osPriorityBelowNormal, 0, 256);
   GetData1Handle = osThreadCreate(osThread(GetData1), NULL);
 
   /* definition and creation of GetData2 */
@@ -233,6 +245,10 @@ int main(void)
   /* definition and creation of ReadCAN */
   osThreadDef(ReadCAN, StartReadCAN, osPriorityNormal, 0, 128);
   ReadCANHandle = osThreadCreate(osThread(ReadCAN), NULL);
+
+  /* definition and creation of GetAccelTask */
+  osThreadDef(GetAccelTask, StartGetAccelTask, osPriorityBelowNormal, 0, 256);
+  GetAccelTaskHandle = osThreadCreate(osThread(GetAccelTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -269,9 +285,10 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
@@ -294,8 +311,9 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2|RCC_PERIPHCLK_I2C3;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
+  PeriphClkInit.I2c3ClockSelection = RCC_I2C3CLKSOURCE_HSI;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
@@ -339,6 +357,54 @@ static void MX_CAN_Init(void)
   }
   /* USER CODE BEGIN CAN_Init 2 */
   /* USER CODE END CAN_Init 2 */
+
+}
+
+/**
+  * @brief I2C3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C3_Init(void)
+{
+
+  /* USER CODE BEGIN I2C3_Init 0 */
+
+  /* USER CODE END I2C3_Init 0 */
+
+  /* USER CODE BEGIN I2C3_Init 1 */
+
+  /* USER CODE END I2C3_Init 1 */
+  hi2c3.Instance = I2C3;
+  hi2c3.Init.Timing = 0x0000020B;
+  hi2c3.Init.OwnAddress1 = 0;
+  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c3.Init.OwnAddress2 = 0;
+  hi2c3.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C3_Init 2 */
+
+  /* USER CODE END I2C3_Init 2 */
 
 }
 
@@ -429,6 +495,7 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
@@ -487,14 +554,16 @@ void print_buffer(CSV_BUFFER *buffer){
 		}
 		myprintf("\r\n");
 	}
-	myprintf("\n\n");
+	myprintf("\r\n");
 }
 
 // float to string
-void ftstr(char* str, uint8_t lstr, float num) {
-	memset(str, 0, lstr);
+void ftstr(char* str, float num) {
 	int whole = (int)num;
-	int dec = (int)((num - whole) * 1000 + 0.5);
+	int dec = (int)((num - whole) * 1000 + 0.5); // 3 decimal places
+	if (dec < 0) {
+	        dec = -dec;
+	    }
 	if (whole < 99999){
 		sprintf(str, "%d.%d", whole, dec);
 	}
@@ -512,18 +581,18 @@ void ftstr(char* str, uint8_t lstr, float num) {
 void StartDefaultTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-//	CAN_TxHeaderTypeDef   TxHeader;
-//
-//	// CAN default data
-//	TxHeader.StdId = 0x222;
-//	TxHeader.ExtId = 0x00;
-//	TxHeader.RTR = CAN_RTR_DATA;
-//	TxHeader.IDE = CAN_ID_STD;
-//	TxHeader.DLC = 4;
-//	TxHeader.TransmitGlobalTime = DISABLE;
-//
-//	uint8_t freeMailboxs;
-//	uint8_t data[10] = "bcad";
+	CAN_TxHeaderTypeDef   TxHeader;
+
+	// CAN default data
+	TxHeader.StdId = 0x222;
+	TxHeader.ExtId = 0x00;
+	TxHeader.RTR = CAN_RTR_DATA;
+	TxHeader.IDE = CAN_ID_STD;
+	TxHeader.DLC = 4;
+	TxHeader.TransmitGlobalTime = DISABLE;
+
+	uint8_t freeMailboxs;
+	uint8_t data[10] = "bcad";
 
 	/* Infinite loop */
 	for(;;)
@@ -555,8 +624,7 @@ void StartDefaultTask(void const * argument)
 void StartSDCardSaveTask(void const * argument)
 {
   /* USER CODE BEGIN StartSDCardSaveTask */
-  uint8_t sens_reading = 2;
-  uint8_t current_row = 0;
+  uint16_t current_row = 0;
   uint8_t file_number = 1;
   TCHAR file_path[30];
   char string_value[20] = {0};
@@ -572,17 +640,17 @@ void StartSDCardSaveTask(void const * argument)
 		if (fres != FR_OK){
 			myprintf("f_mount problem: %d\r\n", fres);
 		}
-		else if (current_row < 10 || file_number < 10){
+		else if (file_number < 10){
 			myprintf("SD Card Mounted!\r\n");
 
-			if (current_row == 5 || file_number == 1){
+			if (current_row > 10 || file_number == 1){
 				current_row = 0;
 				do {
 					sprintf(file_path, "0:/csv/test%hu.csv", file_number);
 					fres = f_stat(file_path, filInfo);
 					file_number++;
 					if (fres != FR_OK) break;
-					myprintf("filepath exists (not overwriting): %s\r\n",file_path);
+					myprintf("filepath exists: %s\r\n",file_path);
 				} while(fres != FR_NO_FILE && !OVERWRITE);
 			}
 
@@ -598,34 +666,64 @@ void StartSDCardSaveTask(void const * argument)
 				myprintf("Creating buffer\r\n");
 				CSV_BUFFER *buffer = csv_create_buffer();
 
-				myprintf("Loading csv\r\n");
-				csv_load(buffer, &rwfile);
-
-				print_buffer(buffer);
-
-				// add a row and input values
+				if (current_row == 0){
+					// first write to the file requires the data headings to be defined
+					myprintf("Writing data headings \r\n");
+					csv_set_field(buffer, 0, 0, "Time (ms)");
+					csv_set_field(buffer, 0, 1, "Accel x (m/s2)");
+					csv_set_field(buffer, 0, 2, "Accel y (m/s2)");
+					csv_set_field(buffer, 0, 3, "Accel z (m/s2)");
+					csv_set_field(buffer, 0, 4, "Roll x (m/s2)");
+					csv_set_field(buffer, 0, 5, "Roll y (m/s2)");
+					csv_set_field(buffer, 0, 6, "Roll z (m/s2)");
+					csv_set_field(buffer, 0, 7, "Temp (C)\r");
+					current_row++;
+				}
+				else{
+					myprintf("Loading csv\r\n");
+					csv_load(buffer, &rwfile);
+				}
 
 				myprintf("editing csv\r\n");
-
-				for (int i = 0; i < 5; i++){
-					// the \r is needed for csv_set_field
-					sprintf(string_value, "%i\r", sens_reading);
-					csv_set_field(buffer, current_row, i, string_value);
+				// add a row of measurement values
+				if(accel_data_collected){			// set MPU6050 values
 					memset(string_value, 0, sizeof(string_value));
-					sens_reading++;
+					sprintf(string_value, "%li", accel_data_time);
+					csv_set_field(buffer, current_row, 0, string_value);
+					memset(string_value, 0, sizeof(string_value));
+					ftstr(string_value, Ax);
+					csv_set_field(buffer, current_row, 1, string_value);
+					memset(string_value, 0, sizeof(string_value));
+					ftstr(string_value, Ay);
+					csv_set_field(buffer, current_row, 2, string_value);
+					memset(string_value, 0, sizeof(string_value));
+					ftstr(string_value, Az);
+					csv_set_field(buffer, current_row, 3, string_value);
+					memset(string_value, 0, sizeof(string_value));
+					ftstr(string_value, Gx);
+					csv_set_field(buffer, current_row, 4, string_value);
+					memset(string_value, 0, sizeof(string_value));
+					ftstr(string_value, Gy);
+					csv_set_field(buffer, current_row, 5, string_value);
+					memset(string_value, 0, sizeof(string_value));
+					ftstr(string_value, Gz);
+					csv_set_field(buffer, current_row, 6, string_value);
+					// final character placeholder
+					// the \r is needed for csv_set_field termination of the row
+					csv_set_field(buffer, current_row+1, 0, "end\r");
+					current_row++;
 				}
-				current_row++;
-
+				print_buffer(buffer);
 				csv_save(&rwfile, buffer);
 
 				f_mount(NULL, "0", 0);
 
 				f_close(&rwfile);
 				csv_destroy_buffer(buffer);
+				}
 			}
-		}
 		else{
-			myprintf("rows completed\r\n");
+			myprintf("file write completed\r\n");
 		}
 
 	// restart CAN telemetry threads
@@ -633,7 +731,10 @@ void StartSDCardSaveTask(void const * argument)
 	osThreadResume(GetData1Handle);
 	//myprintf(" -- RESUMING thread GetData2 -- \r\n");
 	osThreadResume(GetData2Handle);
-
+	// reset data collection
+	//myprintf(" -- RESUMING thread GetAccel -- \r\n");
+	osThreadResume(GetAccelTaskHandle);
+	accel_data_collected = 0;
 	myprintf(" -- ENDING thread SDCardSave -- \r\n");
 	osDelay(SDCardSave_delay);
   }
@@ -663,7 +764,7 @@ void StartGetData1(void const * argument)
 
 	uint8_t TransmissionData1[8] = "dat1";
 	uint8_t node1req[4] = {0x77, 0x6f, 0x6f, 0x66};
-	uint32_t current_time;
+
 	/* Infinite loop */
   for(;;)
   {
@@ -747,6 +848,64 @@ void StartReadCAN(void const * argument)
 		osDelay(read_delay);
 	}
   /* USER CODE END StartReadCAN */
+}
+
+/* USER CODE BEGIN Header_StartGetAccelTask */
+/**
+* @brief Function implementing the GetAccelTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartGetAccelTask */
+void StartGetAccelTask(void const * argument)
+{
+  /* USER CODE BEGIN StartGetAccelTask */
+  /* Infinite loop */
+	uint8_t accel_cnt = 0;
+	MPU6050_Init(&hi2c3);
+  /* Infinite loop */
+  for(;;)
+  {
+	myprintf(" -- running MPU6050 measurement task -- \r\n");
+	Ax = 0;
+	Ay = 0;
+	Az = 0;
+	Gx = 0;
+	Gy = 0;
+	Gz = 0;
+	// take 4 accel_cnt to average out the value
+	for(int i = 0; i < 4; i++){
+		if (!MPU6050_Read_All(&hi2c3, &MPU6050)){
+			myprintf("fetching.. ");
+			Ax += MPU6050.Ax;
+			Ay += MPU6050.Ay;
+			Az += MPU6050.Az;
+			Gx += MPU6050.Gx;
+			Gy += MPU6050.Gy;
+			Gz += MPU6050.Gz;
+			accel_cnt++;
+		}
+	}
+	if(accel_cnt == 4){
+		myprintf(" Data collected.\r\n");
+		accel_data_collected = 1;
+		accel_data_time = HAL_GetTick();
+		Ax += Ax/4;
+		Ay += Ay/4;
+		Az += Az/4;
+		Gx += Gx/4;
+		Gy += Gy/4;
+		Gz += Gz/4;
+		osThreadSuspend(GetAccelTaskHandle);
+	}
+	else{
+		MPU6050_Init(&hi2c3);
+	}
+	accel_cnt = 0;
+	osDelay(accel_read_delay);
+	}
+
+  /* USER CODE END StartGetAccelTask */
 }
 
 /**
