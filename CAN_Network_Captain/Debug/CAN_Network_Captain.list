@@ -5478,7 +5478,7 @@ void StartSDCardSaveTask(void const * argument)
 					myprintf("Writing data headings \r\n");
  800278e:	482b      	ldr	r0, [pc, #172]	; (800283c <StartSDCardSaveTask+0x1e4>)
  8002790:	f7ff fe40 	bl	8002414 <myprintf>
-					csv_set_field(buffer, 0, 0, "Time (s)");
+					csv_set_field(buffer, 0, 0, "Time (ms)");
  8002794:	4b2a      	ldr	r3, [pc, #168]	; (8002840 <StartSDCardSaveTask+0x1e8>)
  8002796:	2200      	movs	r2, #0
  8002798:	2100      	movs	r1, #0
@@ -5710,9 +5710,6 @@ void StartSDCardSaveTask(void const * argument)
  80029d4:	f7fe fd4e 	bl	8001474 <csv_set_field>
 					// final character placeholder
 					// the \r is needed for csv_set_field termination of the row
-//					memset(string_value, 0, sizeof(string_value));
-//					sprintf(string_value, "%i\r", current_row);
-//					csv_set_field(buffer, current_row, 8, string_value);
 					csv_set_field(buffer, current_row+1, 0, "end\r");
  80029d8:	f8b7 3046 	ldrh.w	r3, [r7, #70]	; 0x46
  80029dc:	3301      	adds	r3, #1

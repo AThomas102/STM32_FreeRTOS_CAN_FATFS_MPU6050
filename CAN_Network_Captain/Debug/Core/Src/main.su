@@ -12,9 +12,9 @@
 ../Core/Src/main.c:561:6:ftstr	24	static
 ../Core/Src/main.c:581:6:StartDefaultTask	56	static
 ../Core/Src/main.c:624:6:StartSDCardSaveTask	80	static
-../Core/Src/main.c:754:6:StartGetData1	56	static
-../Core/Src/main.c:815:6:StartGetData2	16	static
-../Core/Src/main.c:833:6:StartReadCAN	40	static
-../Core/Src/main.c:863:6:StartGetAccelTask	24	static
-../Core/Src/main.c:922:6:HAL_TIM_PeriodElapsedCallback	16	static
-../Core/Src/main.c:939:6:Error_Handler	8	static,ignoring_inline_asm
+../Core/Src/main.c:751:6:StartGetData1	56	static
+../Core/Src/main.c:812:6:StartGetData2	16	static
+../Core/Src/main.c:830:6:StartReadCAN	40	static
+../Core/Src/main.c:860:6:StartGetAccelTask	24	static
+../Core/Src/main.c:919:6:HAL_TIM_PeriodElapsedCallback	16	static
+../Core/Src/main.c:936:6:Error_Handler	8	static,ignoring_inline_asm
