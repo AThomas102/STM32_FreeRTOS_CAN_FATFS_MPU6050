@@ -5,6 +5,7 @@
 #include "stm32f3xx_hal.h"
 
 #include "diskio.h"
+#include "cmsis_os.h"
 #include <fatfs_sd.h>
 
 uint16_t Timer1, Timer2;          /* 1ms Timer Counter */
@@ -21,14 +22,12 @@ static uint8_t PowerFlag = 0;       /* Power flag */
 static void SELECT(void)
 {
   HAL_GPIO_WritePin(SD_CS_PORT, SD_CS_PIN, GPIO_PIN_RESET);
-  HAL_Delay(1);
 }
 
 /* slave deselect */
 static void DESELECT(void)
 {
   HAL_GPIO_WritePin(SD_CS_PORT, SD_CS_PIN, GPIO_PIN_SET);
-  HAL_Delay(1);
 }
 
 /* SPI transmit a byte */
@@ -70,7 +69,7 @@ static void SPI_RxBytePtr(uint8_t *buff)
 /* wait SD ready */
 static uint8_t SD_ReadyWait(void)
 {
-  uint8_t res;
+  uint8_t res = 0x00;
 
   /* timeout 500ms */
   Timer2 = 500;

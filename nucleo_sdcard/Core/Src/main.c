@@ -18,11 +18,13 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 #include "fatfs.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "csv.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h> //for va_list var arg functions
@@ -48,10 +50,14 @@ SPI_HandleTypeDef hspi1;
 
 UART_HandleTypeDef huart2;
 
+osThreadId defaultTaskHandle;
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-char buffer[100];
 
+char rwbuffer[50];
+FATFS 		FatFs;
+FIL 		rwfile;
+FRESULT 	fres;                 //Result after operations
 
 /* USER CODE END PV */
 
@@ -60,10 +66,14 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART2_UART_Init(void);
+void StartDefaultTask(void const * argument);
+
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
 void myprintf(const char *fmt, ...);
 void process_SD_card(void);
+void saveData(void);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -78,10 +88,6 @@ void process_SD_card(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  //Fatfs object
-  FATFS FatFs;
-  //File object
-  FIL fil;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -107,13 +113,48 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   myprintf("\r\n\r\n(Powering up)\r\nMary had a little lamb --\r\nI ate it with mint sauce.\r\n\r\n");
-  HAL_Delay(1000);
-  FRESULT fres;
 
-  process_SD_card();
-
+  myprintf("SD Card Connecting\r\n");
+  fres = f_mount(&FatFs, "0", 1);    //1=mount now
+  if (fres != FR_OK)
+  {
+	myprintf("No SD Card found : (%i)\r\n", fres);
+  }
+  else {
+	myprintf("SD Card Mounted Successfully!!!\r\n");
+  }
+  f_mount(NULL, "0", 0);
   /* USER CODE END 2 */
 
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* definition and creation of defaultTask */
+  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 512);
+  defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
@@ -121,81 +162,6 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    
-
-    //Mount drive
-    fres = f_mount(&FatFs, "", 1); //1=mount now
-    if (fres != FR_OK) {
-      myprintf("f_mount error (%i)\r\n", fres);
-
-      while(1);
-    }
-
-    DWORD free_clusters, free_sectors, total_sectors;
-
-    FATFS* getFreeFs;
-
-    fres = f_getfree("", &free_clusters, &getFreeFs);
-    if (fres != FR_OK) {
-      myprintf("f_getfree error (%i)\r\n", fres);
-      while(1);
-    }
- 
-    total_sectors = (getFreeFs->n_fatent - 2) * getFreeFs->csize;
-    free_sectors = free_clusters * getFreeFs->csize;
-
-    myprintf("SD card stats:\r\n%10lu KiB total drive space.\r\n%10lu KiB available.\r\n", total_sectors / 2, free_sectors / 2);
-        
-    //Try to open file
-    fres = f_open(&fil, "test.txt", FA_READ);
-		if (fres != FR_OK) {
-		  myprintf("f_open error (%i)\r\n");
-      while(1);
-    }
-    myprintf("I was able to open 'test.txt' for reading!\r\n");
-
-    BYTE readBuf[300];
-    char buf[300];
-
-    //We can either use f_read OR f_gets to get data out of files
-    //f_gets is a wrapper on f_read that does some string formatting for us
-    TCHAR* rres = f_gets((TCHAR*)readBuf, 30, &fil);
-    if(rres != 0) {
-      myprintf("Read string from 'test.txt' contents: %s\r\n", readBuf);
-    } else {
-      myprintf("f_gets error (%i)\r\n", rres);
-    }
-    
-    // read not working
-    f_gets(buf, sizeof(buf), &fil);
-    myprintf("Read Data : %s\r\n", buf);
-
-    //Close file, don't forget this!
-    f_close(&fil);
-
-    fres = f_open(&fil, "write.txt", FA_WRITE | FA_OPEN_ALWAYS | FA_CREATE_ALWAYS);
-    if(fres == FR_OK) {
-      myprintf("I was able to open 'write.txt' for writing\r\n");
-    } else {
-      myprintf("f_open error (%i)\r\n", fres);
-    }
-
-    strncpy((char*)readBuf, "a new file is made!", 20);
-    UINT bytesWrote; 
-    fres = f_write(&fil, readBuf, 19, &bytesWrote);
-    if(fres == FR_OK) {
-      myprintf("Wrote %i bytes to 'write.txt'!\r\n", bytesWrote);
-    } else {
-      myprintf("f_write error (%i)\r\n");
-    }
-
-    //Close file, don't forget this!
-    f_close(&fil);
-
-    //De-mount drive
-    f_mount(NULL, "", 0);
-
-    while(1);
   }
   /* USER CODE END 3 */
 }
@@ -352,85 +318,181 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(SPI1_CS_GPIO_Port, &GPIO_InitStruct);
 
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
 }
 
 /* USER CODE BEGIN 4 */
 void myprintf(const char *fmt, ...) {
+
+  char *buffer = malloc(100);
   va_list args;
   va_start(args, fmt);
-  vsnprintf(buffer, sizeof(buffer), fmt, args);
+  vsnprintf(buffer, 100, fmt, args);
   va_end(args);
 
   int len = strlen(buffer);
   HAL_UART_Transmit(&huart2, (uint8_t*)buffer, len, 1000);
-
+  free(buffer);
 }
-/*
- * This function works for read/write of SD card.
- */
-void process_SD_card(void)
-{
-  FATFS       FatFs;                //Fatfs handle
-  FIL         fil;                  //File handle
-  FRESULT     fres;                 //Result after operations
-  char        buf[100];
-  do
-  {
-    //Mount the SD Card
-    fres = f_mount(&FatFs, "", 1);    //1=mount now
-    if (fres != FR_OK)
-    {
-      myprintf("No SD Card found : (%i)\r\n", fres);
-      break;
-    }
-    myprintf("SD Card Mounted Successfully!!!\r\n");
-    //Read the SD Card Total size and Free Size
-    FATFS *pfs;
-    DWORD fre_clust;
-    uint32_t totalSpace, freeSpace;
-    f_getfree("", &fre_clust, &pfs);
-    totalSpace = (uint32_t)((pfs->n_fatent - 2) * pfs->csize * 0.5);
-    freeSpace = (uint32_t)(fre_clust * pfs->csize * 0.5);
-    myprintf("TotalSpace : %lu bytes, FreeSpace = %lu bytes\r\n", totalSpace, freeSpace);
-    //Open the file
-    fres = f_open(&fil, "text.txt", FA_WRITE | FA_READ | FA_CREATE_ALWAYS);
-    if(fres != FR_OK)
-    {
-      myprintf("File creation/open Error : (%i)\r\n", fres);
-      break;
-    }
-    myprintf("Writing data!!!\r\n");
-    //write the data
-    f_puts("Welcome to the best zone", &fil);
-    //close your file
-    f_close(&fil);
-    //Open the file
-    fres = f_open(&fil, "text.txt", FA_READ);
-    if(fres != FR_OK)
-    {
-      myprintf("File opening Error : (%i)\r\n", fres);
-      break;
-    }
-    //read the data
-    f_gets(buf, sizeof(buf), &fil);
-    myprintf("Read Data : %s\r\n", buf);
-    //close your file
-    f_close(&fil);
-    myprintf("Closing File!!!\r\n");
-#if 0
-    //Delete the file.
-    fres = f_unlink(text.txt);
-    if (fres != FR_OK)
-    {
-      myprintf("Cannot able to delete the file\r\n");
-    }
-#endif
-  } while(0);
-  //We're done, so de-mount the drive
-  f_mount(NULL, "", 0);
-  myprintf("SD Card Unmounted Successfully!!!\r\n");
+
+void print_buffer(CSV_BUFFER *buffer){
+	int i, j;
+	myprintf("\n");
+	for (i = 0; i < buffer->rows; i++) {
+	for (j = 0; j < buffer->width[i]; j++) {
+			myprintf("%c%s%c%c", buffer->text_delim, buffer->field[i][j]->text, buffer->text_delim, buffer->field_delim);
+		}
+		myprintf("\r\n");
+	}
+	myprintf("\n\n");
+}
+
+void print_csv(void){
+
+	const TCHAR *file_path = "0:/csv/test.csv";
+	FIL 		rwfile;
+	FATFS 		FatFs;
+	FRESULT 	fres;
+	// Mount drive
+	myprintf("Mounting SD card\r\n");
+
+	fres = f_mount(&FatFs, "", 1);
+
+	if (fres != FR_OK){
+		myprintf("f_mount pb: %d\r\n", fres);
+	}
+	else{
+		fres = f_open(&rwfile, file_path, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
+		if (fres != FR_OK){
+			myprintf("f_open pb: %d\r\n", fres);
+		}
+		else{
+			myprintf("Creating buffer\r\n");
+			CSV_BUFFER *csvbuffer = csv_create_buffer();
+
+			myprintf("Loading csv\r\n");
+			csv_load(csvbuffer, &rwfile);
+
+			// Print buffer
+			uint32_t i, j;
+			for (i = 0; i < csvbuffer->rows; i++){
+				for (j = 0; j < csvbuffer->width[i]; j++){
+					//myprintf("%-10s\t", buffer->field[i][j]->text);
+					myprintf("buff[%d][%d] = %s\t\t", i, j, csvbuffer->field[i][j]->text);
+				}
+			}
+		}
+		myprintf("\r\n");
+	}
 }
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void const * argument)
+{
+  /* USER CODE BEGIN 5 */
+  int current_state = 1;
+  const TCHAR *file_path = "0:/csv/test.csv";
+  /* Infinite loop */
+  for(;;)
+  {
+	myprintf("Running Default Task \r\n");
+
+	fres = f_mount(&FatFs, "", 1);    //1=mount now
+	if (fres != FR_OK)
+	{
+	  myprintf("No SD Card found : (%i)\r\n", fres);
+	}
+	else {
+		myprintf("SD Card Mounted Successfully!!!\r\n");
+		FATFS *pfs;
+		DWORD fre_clust;
+		UINT br;
+		uint32_t totalSpace, freeSpace;
+		f_getfree("", &fre_clust, &pfs);
+		totalSpace = (uint32_t)((pfs->n_fatent - 2) * pfs->csize * 0.5);
+		freeSpace = (uint32_t)(fre_clust * pfs->csize * 0.5);
+		myprintf("TotalSpace : %lu bytes, FreeSpace = %lu bytes\r\n", totalSpace, freeSpace);
+		fres = f_open(&rwfile, "text.txt", FA_WRITE | FA_CREATE_ALWAYS);
+		if(fres != FR_OK){
+			myprintf("File creation/open Error : (%i)\r\n", fres);
+		}
+		else{
+			myprintf("Writing data!!!\r\n");
+			//write the data
+			f_puts("Welcome to the best zone", &rwfile);
+			//close your file
+			f_close(&rwfile);
+			fres = f_open(&rwfile, "text.txt", FA_WRITE | FA_READ | FA_CREATE_ALWAYS);
+			if(fres != FR_OK){
+				myprintf("File creation/open Error : (%i)\r\n", fres);
+			}
+			else{
+				//read the data
+				f_read(&rwfile, rwbuffer, 10, &br);
+				myprintf("Read Data : %s\r\n", rwbuffer);
+				//close your file
+				f_close(&rwfile);
+				myprintf("Closing File!!!\r\n");
+			}
+		}
+
+	}
+	f_mount(NULL, "0", 0);
+
+	myprintf("Mounting SD card\r\n");
+	fres = f_mount(&FatFs, "0", 1);
+	if (fres != FR_OK)
+	{
+		myprintf("f_mount problem: %d\r\n", fres);
+	}
+	else{
+		fres = f_open(&rwfile, file_path, FA_OPEN_EXISTING | FA_READ | FA_WRITE);
+		if (fres != FR_OK)
+		{
+			myprintf("f_open pb: %d\r\n", fres);
+		}
+		else{
+			myprintf("Creating buffer\r\n");
+			CSV_BUFFER *buffer = csv_create_buffer();
+
+			myprintf("Loading csv\r\n");
+			csv_load(buffer, &rwfile);
+
+			print_buffer(buffer);
+
+			// add a row and input values
+
+			if (current_state == 1){
+				myprintf("editing csv\r\n");
+				char *new_value = "88";
+				current_state--;
+				csv_set_field(buffer, 1, 1, (char *) new_value);
+				csv_set_field(buffer, 1, 2, (char *) new_value);
+			}
+			csv_save(&rwfile, buffer);
+
+			f_mount(NULL, "0", 0);
+
+			f_close(&rwfile);
+			csv_destroy_buffer(buffer);
+		}
+	}
+
+
+    osDelay(4000);
+  }
+  /* USER CODE END 5 */
+}
 
 /**
   * @brief  Period elapsed callback in non blocking mode
